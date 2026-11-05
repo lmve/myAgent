@@ -1,0 +1,15 @@
+[package]
+name = "rust-agent"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "A minimal LLM agent demo in Rust"
+
+[dependencies]
+anyhow = "1"
+dotenvy = "0.15"
+encoding_rs = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
