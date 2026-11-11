@@ -7,6 +7,7 @@ description = "A minimal LLM agent demo in Rust"
 
 [dependencies]
 anyhow = "1"
+chrono = { version = "0.4", features = ["clock"] }
 dotenvy = "0.15"
 encoding_rs = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

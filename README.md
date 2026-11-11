@@ -56,11 +56,14 @@ LLM_API_KEY=ollama
 src/
 ├── main.rs    # 入口：参数解析、交互循环、维护对话历史、控制台编码兼容
 ├── config.rs  # 环境变量配置与默认值
-└── llm.rs     # OpenAI 兼容客户端、消息/响应类型、单元测试
+├── llm.rs     # OpenAI 兼容客户端、消息/响应类型、单元测试
+└── tools.rs   # 工具 schema 与执行函数
 ```
 
-- `LlmClient::chat(&[Message])` 是唯一的网络出口，返回 `ChatOutput`
-  （内容、`finish_reason`、token 用量）。
+- `LlmClient::chat(&[Message], &[Value])` 是唯一的网络出口，返回 `ChatOutput`
+  （内容、工具调用、`finish_reason`、token 用量）。
+- Agent 暴露 `add`（两数相加）和 `get_current_time`（获取本地 ISO 8601 时间）工具；
+  模型发起调用后，执行结果会以 `role: "tool"` 消息回填，并继续请求模型生成答复。
 - 请求失败时不会污染对话历史，便于重试。
 - 非流式（`stream: false`），先追求最简单可跑通。
 
@@ -71,10 +74,8 @@ cargo test        # 覆盖响应解析、空内容、错误分支
 cargo clippy --all-targets
 ```
 
-## 下一步可以扩展成真正的 Agent
+## 后续可以扩展
 
 1. **流式输出**：`stream: true` + SSE 解析，边生成边打印。
-2. **工具调用**：定义 JSON Schema 工具表，把 `tool_calls` 解析出来，执行后以
-   `role: "tool"` 回填，循环直到模型不再调用工具。
-3. **重试与限流**：对 429/5xx 做指数退避。
-4. **会话持久化**：把 `history` 序列化到磁盘，支持恢复会话。
+2. **重试与限流**：对 429/5xx 做指数退避。
+3. **会话持久化**：把 `history` 序列化到磁盘，支持恢复会话。

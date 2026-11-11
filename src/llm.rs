@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::config::Config;
 
@@ -15,14 +16,21 @@ use crate::config::Config;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl Message {
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: role.into(),
-            content: content.into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
 
@@ -34,15 +42,44 @@ impl Message {
         Self::new("user", content)
     }
 
-    pub fn assistant(content: impl Into<String>) -> Self {
-        Self::new("assistant", content)
+    pub fn assistant(content: Option<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
+        Self {
+            role: "assistant".into(),
+            content,
+            tool_calls,
+            tool_call_id: None,
+        }
     }
+
+    pub fn tool(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".into(),
+            content: Some(content.into()),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub function: FunctionCall,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionCall {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
     messages: &'a [Message],
+    tools: &'a [Value],
     stream: bool,
     temperature: f32,
 }
@@ -77,6 +114,7 @@ pub struct Usage {
 #[derive(Debug)]
 pub struct ChatOutput {
     pub content: String,
+    pub tool_calls: Option<Vec<ToolCall>>,
     pub finish_reason: Option<String>,
     pub usage: Option<Usage>,
 }
@@ -105,12 +143,13 @@ impl LlmClient {
         })
     }
 
-    /// 发送整段对话历史，返回模型回复。
-    pub async fn chat(&self, messages: &[Message]) -> Result<ChatOutput> {
+    /// 发送整段对话历史和可用工具，返回模型回复或工具调用。
+    pub async fn chat(&self, messages: &[Message], tools: &[Value]) -> Result<ChatOutput> {
         let url = format!("{}/chat/completions", self.base_url);
         let body = ChatRequest {
             model: &self.model,
             messages,
+            tools,
             stream: false,
             temperature: self.temperature,
         };
@@ -145,9 +184,10 @@ fn extract_output(response: ChatResponse) -> Result<ChatOutput> {
         .context("LLM 响应中没有 choices")?;
 
     let message = choice.message.context("LLM 响应的 choice 中没有 message")?;
-    let content = message.content.trim().to_string();
+    let content = message.content.unwrap_or_default().trim().to_string();
+    let tool_calls = message.tool_calls.filter(|calls| !calls.is_empty());
 
-    if content.is_empty() {
+    if content.is_empty() && tool_calls.is_none() {
         bail!(
             "LLM 返回了空内容（finish_reason = {}）",
             choice.finish_reason.as_deref().unwrap_or("unknown")
@@ -156,6 +196,7 @@ fn extract_output(response: ChatResponse) -> Result<ChatOutput> {
 
     Ok(ChatOutput {
         content,
+        tool_calls,
         finish_reason: choice.finish_reason,
         usage: response.usage,
     })
@@ -186,6 +227,7 @@ mod tests {
         }"#;
         let out = extract_output(serde_json::from_str(raw).unwrap()).unwrap();
         assert_eq!(out.content, "你好");
+        assert!(out.tool_calls.is_none());
         assert_eq!(out.finish_reason.as_deref(), Some("stop"));
         assert_eq!(out.usage.unwrap().total_tokens, 13);
     }
@@ -202,6 +244,22 @@ mod tests {
         let raw = r#"{"choices": [{"message": {"role": "assistant", "content": "  "}, "finish_reason": "length"}]}"#;
         let err = extract_output(serde_json::from_str(raw).unwrap()).unwrap_err();
         assert!(err.to_string().contains("length"));
+    }
+
+    #[test]
+    fn parses_tool_call_without_content() {
+        let raw = r#"{"choices": [{"message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "add", "arguments": "{\"a\":1,\"b\":2}"}
+            }]
+        }, "finish_reason": "tool_calls"}]}"#;
+        let out = extract_output(serde_json::from_str(raw).unwrap()).unwrap();
+        assert_eq!(out.content, "");
+        assert_eq!(out.tool_calls.unwrap()[0].function.name, "add");
     }
 
     #[test]
