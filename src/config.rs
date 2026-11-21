@@ -20,6 +20,7 @@ pub struct Config {
     pub system_prompt: Option<String>,
     pub temperature: f32,
     pub timeout_secs: u64,
+    pub stream: bool,
 }
 
 impl Config {
@@ -34,8 +35,8 @@ impl Config {
                 )
             })?;
 
-        let system_prompt = optional_env("LLM_SYSTEM_PROMPT")
-            .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+        let system_prompt =
+            optional_env("LLM_SYSTEM_PROMPT").unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
 
         Ok(Self {
             api_key,
@@ -49,6 +50,14 @@ impl Config {
             timeout_secs: optional_env("LLM_TIMEOUT_SECS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(DEFAULT_TIMEOUT_SECS),
+            stream: optional_env("LLM_STREAM")
+                .map(|v| {
+                    matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    )
+                })
+                .unwrap_or(false),
         })
     }
 }

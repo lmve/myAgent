@@ -36,6 +36,7 @@ cargo run
 | `LLM_SYSTEM_PROMPT` | 否 | 中文助手提示词 | 置空可关闭 system 消息 |
 | `LLM_TEMPERATURE` | 否 | `0.7` | 采样温度 |
 | `LLM_TIMEOUT_SECS` | 否 | `120` | 请求超时 |
+| `LLM_STREAM` | 否 | `false` | `true` 开启流式输出，`false` 使用完整响应后输出 |
 
 常见服务商示例：
 
@@ -60,12 +61,18 @@ src/
 └── tools.rs   # 工具 schema 与执行函数
 ```
 
-- `LlmClient::chat(&[Message], &[Value])` 是唯一的网络出口，返回 `ChatOutput`
-  （内容、工具调用、`finish_reason`、token 用量）。
+- `LlmClient::chat` 是唯一的网络出口，按配置选择普通 JSON 或 SSE 响应，返回
+  `ChatOutput`（内容、工具调用、`finish_reason`、可用时的 token 用量）。
 - Agent 暴露 `add`（两数相加）和 `get_current_time`（获取本地 ISO 8601 时间）工具；
   模型发起调用后，执行结果会以 `role: "tool"` 消息回填，并继续请求模型生成答复。
+- 默认使用非流式响应：服务端返回完整答案后再显示。设置 `LLM_STREAM=true` 可启用
+  SSE 流式响应，文本会随生成逐段显示；两种模式都支持工具调用，流式模式会合并工具参数片段后再执行。
 - 请求失败时不会污染对话历史，便于重试。
-- 非流式（`stream: false`），先追求最简单可跑通。
+
+| 模式 | 响应方式 | 用户体验 | 本项目配置 |
+| --- | --- | --- | --- |
+| 非流式 | 等模型完整生成后一次返回 | 实现简单，但等待期间看不到进度 | 默认，或 `LLM_STREAM=false` |
+| 流式 | 服务端以 SSE 分段发送内容 | 首字更快显示，可逐步看到回答 | `LLM_STREAM=true` |
 
 ## 测试
 
@@ -76,6 +83,5 @@ cargo clippy --all-targets
 
 ## 后续可以扩展
 
-1. **流式输出**：`stream: true` + SSE 解析，边生成边打印。
-2. **重试与限流**：对 429/5xx 做指数退避。
-3. **会话持久化**：把 `history` 序列化到磁盘，支持恢复会话。
+1. **重试与限流**：对 429/5xx 做指数退避。
+2. **会话持久化**：把 `history` 序列化到磁盘，支持恢复会话。

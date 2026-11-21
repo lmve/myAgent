@@ -31,6 +31,7 @@ rust-agent — 最小 LLM 调用 Demo
   LLM_SYSTEM_PROMPT  系统提示词，置空可关闭
   LLM_TEMPERATURE    采样温度，默认 0.7
   LLM_TIMEOUT_SECS   请求超时秒数，默认 120
+  LLM_STREAM         是否流式输出，true/false，默认 false
 
 交互模式命令:
   /clear  清空对话上下文（保留 system 提示词）
@@ -57,16 +58,25 @@ async fn main() -> Result<()> {
     }
 
     eprintln!(
-        "[config] model={} endpoint={}/chat/completions",
+        "[config] model={} endpoint={}/chat/completions stream={}",
         config.model,
-        config.base_url.trim_end_matches('/')
+        config.base_url.trim_end_matches('/'),
+        config.stream
     );
 
     // 单次提问模式
     if !args.is_empty() {
         let question = args.join(" ");
-        let output = ask(&client, &mut history, &question).await?;
-        println!("{}", output.content);
+        if config.stream {
+            print!("助手 > ");
+            io::stdout().flush().ok();
+        }
+        let output = ask(&client, &mut history, &question, config.stream).await?;
+        if config.stream {
+            println!();
+        } else {
+            println!("{}", output.content);
+        }
         return Ok(());
     }
 
@@ -90,10 +100,22 @@ async fn main() -> Result<()> {
                 eprintln!("[context] 已清空对话上下文");
                 continue;
             }
-            question => match ask(&client, &mut history, question).await {
-                Ok(output) => println!("\n助手 > {}", output.content),
-                Err(err) => eprintln!("\n[错误] {err:#}"),
-            },
+            question => {
+                if config.stream {
+                    print!("\n助手 > ");
+                    io::stdout().flush().ok();
+                }
+                match ask(&client, &mut history, question, config.stream).await {
+                    Ok(_) if config.stream => println!(),
+                    Ok(output) => println!("\n助手 > {}", output.content),
+                    Err(err) => {
+                        if config.stream {
+                            println!();
+                        }
+                        eprintln!("\n[错误] {err:#}");
+                    }
+                }
+            }
         }
     }
 
@@ -102,13 +124,23 @@ async fn main() -> Result<()> {
 
 /// 把问题追加进历史，处理模型的工具调用，直到得到最终回答。
 /// 调用失败时回滚本轮全部消息，保证历史仍然自洽。
-async fn ask(client: &LlmClient, history: &mut Vec<Message>, question: &str) -> Result<ChatOutput> {
+async fn ask(
+    client: &LlmClient,
+    history: &mut Vec<Message>,
+    question: &str,
+    stream: bool,
+) -> Result<ChatOutput> {
     let history_len = history.len();
     history.push(Message::user(question));
 
     let result = async {
         loop {
-            let output = client.chat(history, &tools::schemas()).await?;
+            let output = client
+                .chat(history, &tools::schemas(), stream, |delta| {
+                    print!("{delta}");
+                    let _ = io::stdout().flush();
+                })
+                .await?;
             let tool_calls = output.tool_calls.clone().unwrap_or_default();
             let has_tool_calls = !tool_calls.is_empty();
 
