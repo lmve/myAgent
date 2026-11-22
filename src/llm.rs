@@ -237,6 +237,19 @@ impl LlmClient {
         extract_output(parsed)
     }
 
+    /// Compress older conversation into a summary without exposing tools or streaming output.
+    pub async fn summarize(&self, prompt: &str) -> Result<String> {
+        let messages = [
+            Message::system("你负责压缩对话上下文，准确保留后续回答所需信息。"),
+            Message::user(prompt),
+        ];
+        let output = self.chat_non_stream(&messages, &[]).await?;
+        if output.tool_calls.is_some() {
+            bail!("上下文摘要请求意外返回了工具调用");
+        }
+        Ok(output.content)
+    }
+
     async fn chat_stream<F>(
         &self,
         messages: &[Message],

@@ -37,6 +37,8 @@ cargo run
 | `LLM_TEMPERATURE` | 否 | `0.7` | 采样温度 |
 | `LLM_TIMEOUT_SECS` | 否 | `120` | 请求超时 |
 | `LLM_STREAM` | 否 | `false` | `true` 开启流式输出，`false` 使用完整响应后输出 |
+| `CONTEXT_STRATEGY` | 否 | `layered` | 上下文策略：`truncate`、`summarize`、`layered` |
+| `CONTEXT_MAX_TOKENS` | 否 | `6000` | 对话历史预算估算值，最小 `512` |
 
 常见服务商示例：
 
@@ -74,10 +76,22 @@ src/
 | 非流式 | 等模型完整生成后一次返回 | 实现简单，但等待期间看不到进度 | 默认，或 `LLM_STREAM=false` |
 | 流式 | 服务端以 SSE 分段发送内容 | 首字更快显示，可逐步看到回答 | `LLM_STREAM=true` |
 
+## 上下文窗口管理
+
+Agent 每次请求模型前会估算消息长度，并在超出 `CONTEXT_MAX_TOKENS` 时压缩历史。
+由于不同模型的 tokenizer 不同，这里使用字符数作为保守近似，并非精确 token 计数；
+预算只计算消息，不包含模型回复预留和工具 schema，建议将其设为模型窗口的一部分。
+
+- `truncate`：丢弃较早的完整对话轮次，只保留最近轮次，不调用模型生成摘要。
+- `summarize`：将较早轮次总结为记忆，约 55% 预算用于近期原文、最多约 30% 用于摘要。
+- `layered`：默认策略，将固定 system 指令、分层摘要和近期原文分开放置；摘要包含长期事实/偏好、当前目标/约束、决定和待处理事项，约 45% 预算用于近期原文、最多约 30% 用于摘要。
+
+摘要通过同一个 LLM 以非流式方式生成，不开放工具调用；`/clear` 会同时清除摘要和对话，但保留原始 system prompt。上下文没有超限时不会重写历史，有助于保持稳定的提示词前缀。
+
 ## 测试
 
 ```bash
-cargo test        # 覆盖响应解析、空内容、错误分支
+cargo test        # 覆盖响应解析、工具调用、上下文管理等
 cargo clippy --all-targets
 ```
 

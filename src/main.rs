@@ -5,6 +5,7 @@
 //!   cargo run            # 进入交互式多轮对话
 
 mod config;
+mod context_manager;
 mod llm;
 mod tools;
 
@@ -13,6 +14,7 @@ use std::io::{self, BufRead, Write};
 use anyhow::Result;
 
 use config::Config;
+use context_manager::ContextManager;
 use llm::{ChatOutput, LlmClient, Message};
 use serde_json::Value;
 
@@ -32,6 +34,8 @@ rust-agent — 最小 LLM 调用 Demo
   LLM_TEMPERATURE    采样温度，默认 0.7
   LLM_TIMEOUT_SECS   请求超时秒数，默认 120
   LLM_STREAM         是否流式输出，true/false，默认 false
+  CONTEXT_STRATEGY   truncate / summarize / layered，默认 layered
+  CONTEXT_MAX_TOKENS 上下文预算估算值，默认 6000
 
 交互模式命令:
   /clear  清空对话上下文（保留 system 提示词）
@@ -50,6 +54,7 @@ async fn main() -> Result<()> {
 
     let config = Config::from_env()?;
     let client = LlmClient::new(&config)?;
+    let context_manager = ContextManager::new(config.context_strategy, config.context_max_tokens);
 
     // 多轮对话和工具调用共用这份历史。
     let mut history: Vec<Message> = Vec::new();
@@ -58,10 +63,12 @@ async fn main() -> Result<()> {
     }
 
     eprintln!(
-        "[config] model={} endpoint={}/chat/completions stream={}",
+        "[config] model={} endpoint={}/chat/completions stream={} context={} budget≈{} tokens",
         config.model,
         config.base_url.trim_end_matches('/'),
-        config.stream
+        config.stream,
+        config.context_strategy.as_str(),
+        config.context_max_tokens
     );
 
     // 单次提问模式
@@ -71,7 +78,14 @@ async fn main() -> Result<()> {
             print!("助手 > ");
             io::stdout().flush().ok();
         }
-        let output = ask(&client, &mut history, &question, config.stream).await?;
+        let output = ask(
+            &client,
+            &mut history,
+            &context_manager,
+            &question,
+            config.stream,
+        )
+        .await?;
         if config.stream {
             println!();
         } else {
@@ -96,7 +110,7 @@ async fn main() -> Result<()> {
             "" => continue,
             "/exit" | "/quit" => break,
             "/clear" => {
-                history.retain(|m| m.role == "system");
+                context_manager.clear(&mut history);
                 eprintln!("[context] 已清空对话上下文");
                 continue;
             }
@@ -105,7 +119,15 @@ async fn main() -> Result<()> {
                     print!("\n助手 > ");
                     io::stdout().flush().ok();
                 }
-                match ask(&client, &mut history, question, config.stream).await {
+                match ask(
+                    &client,
+                    &mut history,
+                    &context_manager,
+                    question,
+                    config.stream,
+                )
+                .await
+                {
                     Ok(_) if config.stream => println!(),
                     Ok(output) => println!("\n助手 > {}", output.content),
                     Err(err) => {
@@ -127,14 +149,16 @@ async fn main() -> Result<()> {
 async fn ask(
     client: &LlmClient,
     history: &mut Vec<Message>,
+    context_manager: &ContextManager,
     question: &str,
     stream: bool,
 ) -> Result<ChatOutput> {
-    let history_len = history.len();
+    let original_history = history.clone();
     history.push(Message::user(question));
 
     let result = async {
         loop {
+            context_manager.prepare(history, client).await?;
             let output = client
                 .chat(history, &tools::schemas(), stream, |delta| {
                     print!("{delta}");
@@ -167,7 +191,7 @@ async fn ask(
     let output = match result {
         Ok(output) => output,
         Err(err) => {
-            history.truncate(history_len);
+            *history = original_history;
             return Err(err);
         }
     };
